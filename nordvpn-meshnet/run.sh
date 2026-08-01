@@ -197,13 +197,52 @@ nord set post-quantum off || true
 if nordvpn account >/dev/null 2>&1; then
     bashio::log.info "Already logged in; reusing the stored session."
 else
-    bashio::log.info "Logging in with the configured access token..."
-    # Bounded: an invalid token makes the client retry for minutes before
-    # giving up, which looks like a hang rather than a bad credential.
-    if ! timeout 90 nordvpn login --token "${TOKEN}" >/dev/null 2>&1; then
+    # On a cold start the daemon is still fetching its remote config and
+    # server list, and login can block behind that. Retry with backoff rather
+    # than failing on a single attempt.
+    login_ok=false
+    for attempt in 1 2 3; do
+        bashio::log.info "Logging in with the configured access token (attempt ${attempt}/3)..."
+
+        # Capture the output. Never discard it: the client's own message is the
+        # only thing that distinguishes a bad token from a network problem.
+        # Redact anything token-shaped before it reaches the log.
+        set +o errexit
+        login_out=$(timeout 60 nordvpn login --token "${TOKEN}" 2>&1)
+        login_rc=$?
+        set -o errexit
+        login_out=$(printf '%s' "${login_out}" | sed -E 's/[a-fA-F0-9]{32,}/<redacted>/g' | tr '\n' ' ')
+
+        if [[ ${login_rc} -eq 0 ]]; then
+            login_ok=true
+            break
+        fi
+
+        if [[ ${login_rc} -eq 124 ]]; then
+            bashio::log.warning "Attempt ${attempt}: timed out after 60s with no reply."
+        else
+            bashio::log.warning "Attempt ${attempt}: exit ${login_rc}: ${login_out:-<no output>}"
+        fi
+
+        # A rejected credential is not worth retrying.
+        if [[ "${login_out}" == *"not valid"* ]] || [[ "${login_out}" == *"invalid"* ]] \
+            || [[ "${login_out}" == *"expired"* ]] || [[ "${login_out}" == *"denied"* ]]; then
+            bashio::exit.nok \
+                "The token was rejected: ${login_out} -- generate a fresh access \
+token at my.nordaccount.com and update this add-on's configuration."
+        fi
+
+        # Written as a full if, not `[[ ]] && sleep`: under `set -e` a trailing
+        # short-circuit that evaluates false is a well-known way to kill a loop.
+        if [[ ${attempt} -lt 3 ]]; then
+            sleep $((attempt * 15))
+        fi
+    done
+
+    if [[ "${login_ok}" != true ]]; then
         bashio::exit.nok \
-            "Login failed or timed out. Check that this is a NordVPN *access \
-token* (not your account password) and that it has not been revoked."
+            "Could not log in after 3 attempts. See the attempt messages above \
+for the client's own explanation."
     fi
     bashio::log.info "Login succeeded."
 fi
