@@ -1,0 +1,49 @@
+---
+name: NordVPN Meshnet
+version: "1.0.0"
+slug: nordvpn_meshnet
+description: >-
+  Joins this Home Assistant to your NordVPN Meshnet so you can reach it from a
+  remote network without exposing it to the internet. Meshnet only: it never
+  routes Home Assistant's own traffic through a VPN server.
+url: https://github.com/Adrxx/ha-addons/tree/main/nordvpn-meshnet
+arch:
+  - aarch64
+  - amd64
+init: false
+startup: services
+boot: auto
+
+# Meshnet must live in the host network namespace. Otherwise the meshnet
+# interface would exist only inside this container and peers would reach the
+# add-on rather than Home Assistant on :8123.
+host_network: true
+
+# Minimal privileges. NET_ADMIN is needed to create the tunnel interface and
+# add routes; /dev/net/tun is the userspace WireGuard device. Notably we do NOT
+# need SYS_MODULE or full_access: nordvpn 5.x ships libtelio.so and loads no
+# kernel module (verified against nordvpn_5.2.0_arm64.deb).
+privileged:
+  - NET_ADMIN
+devices:
+  - /dev/net/tun
+
+options:
+  token: ""
+  nickname: homeassistant
+  allow_incoming: true
+  allow_lan_access: false
+  allow_fileshare: false
+  nordvpn_firewall: false
+  check_interval: 300
+  log_level: info
+
+schema:
+  token: password
+  nickname: str?
+  allow_incoming: bool
+  allow_lan_access: bool
+  allow_fileshare: bool
+  nordvpn_firewall: bool
+  check_interval: int(60,3600)
+  log_level: list(trace|debug|info|notice|warning|error|fatal)

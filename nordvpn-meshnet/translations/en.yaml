@@ -1,0 +1,39 @@
+---
+configuration:
+  token:
+    name: NordVPN access token
+    description: >-
+      From my.nordaccount.com -> NordVPN -> Manual setup -> Generate new token.
+      This is not your account password.
+  nickname:
+    name: Meshnet nickname
+    description: >-
+      Name for this device in Meshnet, giving you http://<nickname>.nord:8123.
+      Max 25 characters, no leading or trailing dash.
+  allow_incoming:
+    name: Allow incoming connections from your devices
+    description: >-
+      Required to actually reach Home Assistant from a peer. With this off,
+      peers can see this node but cannot open port 8123 on it.
+  allow_lan_access:
+    name: Allow peers to reach your whole LAN
+    description: >-
+      Lets peers route traffic through Home Assistant and reach every other
+      device on your network, including your routers. Not needed just to reach
+      Home Assistant itself.
+  allow_fileshare:
+    name: Allow Meshnet file transfers
+    description: >-
+      Allow peers to send files to Home Assistant. Off by default.
+  nordvpn_firewall:
+    name: Let NordVPN manage the firewall
+    description: >-
+      Leave off. This add-on runs in the host network namespace, so NordVPN's
+      rules would land in the tables Home Assistant OS manages.
+  check_interval:
+    name: Health check interval (seconds)
+    description: How often to verify Meshnet is still up.
+  log_level:
+    name: Log level
+    description: >-
+      Set to debug to also pass through nordvpnd's own very verbose logging.
