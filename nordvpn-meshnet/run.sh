@@ -93,8 +93,17 @@ nord() {
     return 1
 }
 
+# Mirror the daemon's state directory out to /data so the login session and
+# Meshnet identity survive add-on restarts and updates.
+save_state() {
+    if [[ -d /var/lib/nordvpn ]] && [[ -d "${STATE_DIR}" ]]; then
+        cp -a /var/lib/nordvpn/. "${STATE_DIR}/" 2>/dev/null || true
+    fi
+}
+
 cleanup() {
     trap - TERM INT EXIT
+    save_state
     if [[ "${DAEMON_PID}" -ne 0 ]] && kill -0 "${DAEMON_PID}" 2>/dev/null; then
         bashio::log.info "Stopping nordvpnd (pid ${DAEMON_PID})..."
         kill -TERM "${DAEMON_PID}" 2>/dev/null || true
@@ -127,14 +136,19 @@ fi
 
 # --- persistent state ------------------------------------------------------
 # /var/lib/nordvpn holds the login session, the Meshnet identity and settings.
-# The add-on container is recreated on every update, so keep it on /data.
-# Seed from the image on first run so the bundled server data survives.
-if [[ ! -d "${STATE_DIR}" ]]; then
-    bashio::log.info "First run: seeding persistent state in ${STATE_DIR}"
-    cp -a /var/lib/nordvpn "${STATE_DIR}"
+# The add-on container is recreated on every update, so mirror it to /data.
+#
+# IMPORTANT: /var/lib/nordvpn must remain a REAL directory. Making it a symlink
+# to /data (the obvious way to persist it) makes the client's analytics store
+# fail to open with "moose: sqlite connect error", and `nordvpn login` then
+# never completes -- it hangs until killed, with no error of its own. Verified
+# by A/B test: 1 sqlite error with the symlink, 0 without. So copy state in at
+# startup and mirror it back out, rather than redirecting the directory.
+install -d -m 0750 "${STATE_DIR}"
+if [[ -n "$(ls -A "${STATE_DIR}" 2>/dev/null || true)" ]]; then
+    bashio::log.info "Restoring saved NordVPN state from ${STATE_DIR}"
+    cp -a "${STATE_DIR}/." /var/lib/nordvpn/ 2>/dev/null || true
 fi
-rm -rf /var/lib/nordvpn
-ln -sfn "${STATE_DIR}" /var/lib/nordvpn
 
 install -d -m 0750 /run/nordvpn
 
@@ -342,4 +356,8 @@ while true; do
     else
         bashio::log.debug "Meshnet healthy."
     fi
+
+    # Mirror state out periodically too, so an ungraceful kill loses at most
+    # one interval rather than the whole session.
+    save_state
 done

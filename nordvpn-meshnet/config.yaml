@@ -1,6 +1,6 @@
 ---
 name: NordVPN Meshnet
-version: "1.0.1"
+version: "1.0.2"
 slug: nordvpn_meshnet
 description: >-
   Joins this Home Assistant to your NordVPN Meshnet so you can reach it from a
