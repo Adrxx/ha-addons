@@ -136,6 +136,23 @@ restore_rp_filter() {
     fi
 }
 
+# For commands that are expected to be no-ops on a warm start. The CLI reports
+# "already allowed" / "already denied" as a failure, and reports this device
+# itself as an unknown peer; none of those are worth a warning, and ten of them
+# per start refill the small add-on log buffer that the startup banner needs.
+nord_idempotent() {
+    local output
+    if output=$(nordvpn "$@" 2>&1); then
+        return 0
+    fi
+    if [[ "${output}" == *"already"* ]] || [[ "${output}" == *"is unknown"* ]]; then
+        bashio::log.debug "nordvpn $*: $(echo "${output}" | tr '\n' ' ')"
+        return 0
+    fi
+    bashio::log.warning "nordvpn $* failed: $(echo "${output}" | tr '\n' ' ')"
+    return 1
+}
+
 cleanup() {
     trap - TERM INT EXIT
     save_state
@@ -353,22 +370,22 @@ while read -r peer; do
     [[ -z "${peer}" ]] && continue
 
     if opt_bool allow_incoming; then
-        nord meshnet peer incoming allow "${peer}" || true
+        nord_idempotent meshnet peer incoming allow "${peer}" || true
     else
-        nord meshnet peer incoming deny "${peer}" || true
+        nord_idempotent meshnet peer incoming deny "${peer}" || true
     fi
 
     # Local network access only functions in tandem with traffic routing, so
     # granting one without the other would do nothing.
     if opt_bool allow_lan_access; then
-        nord meshnet peer routing allow "${peer}" || true
-        nord meshnet peer local allow "${peer}" || true
+        nord_idempotent meshnet peer routing allow "${peer}" || true
+        nord_idempotent meshnet peer local allow "${peer}" || true
     fi
 
     if opt_bool allow_fileshare; then
-        nord meshnet peer fileshare allow "${peer}" || true
+        nord_idempotent meshnet peer fileshare allow "${peer}" || true
     else
-        nord meshnet peer fileshare deny "${peer}" || true
+        nord_idempotent meshnet peer fileshare deny "${peer}" || true
     fi
 done < <(peer_hostnames)
 
