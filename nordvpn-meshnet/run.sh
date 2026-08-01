@@ -359,26 +359,44 @@ fi
 
 # --- report ----------------------------------------------------------------
 
+PEER_LIST=$(nordvpn meshnet peer list 2>/dev/null || true)
+
+# Read the identity back rather than assuming the nickname we asked for stuck:
+# a name already taken by another device is rejected, and advertising a URL
+# that does not resolve is worse than not advertising one.
+SELF_HOST=$(printf '%s\n' "${PEER_LIST}" \
+    | awk '/This device:/{f=1} f&&/Hostname:/{print $2; exit}')
+SELF_NICK=$(printf '%s\n' "${PEER_LIST}" \
+    | awk '/This device:/{f=1} f&&/Nickname:/{print $2; exit}')
 MESH_IP=$(ip -4 -brief addr show dev nordlynx 2>/dev/null \
     | awk '{print $3}' | cut -d/ -f1 || true)
 
 bashio::log.info "-------------------------------------------------------"
+bashio::log.info "Meshnet is up. Reach Home Assistant from any peer at:"
 if [[ -n "${MESH_IP}" ]]; then
-    bashio::log.info "Meshnet is up. Reach Home Assistant from any peer at:"
     bashio::log.info "    http://${MESH_IP}:8123"
-else
-    bashio::log.info "Meshnet is up."
 fi
-if [[ -n "${NICKNAME}" ]]; then
-    bashio::log.info "    http://${NICKNAME}.nord:8123"
+if [[ -n "${SELF_HOST}" ]]; then
+    bashio::log.info "    http://${SELF_HOST}:8123"
+fi
+if [[ -n "${SELF_NICK}" ]] && [[ "${SELF_NICK}" != "-" ]]; then
+    bashio::log.info "    http://${SELF_NICK}.nord:8123"
+elif ! bashio::var.is_empty "${NICKNAME}"; then
+    bashio::log.warning \
+        "The nickname '${NICKNAME}' did not apply -- it is probably already \
+taken by another device on this account. Use the hostname above instead."
 fi
 bashio::log.info "-------------------------------------------------------"
 
+# One line per peer. The raw `peer list` output runs to ~40 lines per device
+# and overruns the add-on log buffer, pushing these startup messages -- the
+# ones you actually need when something is wrong -- straight out of it.
 bashio::log.info "Meshnet peers:"
-nordvpn meshnet peer list 2>&1 | while IFS= read -r line; do
-    [[ -z "${line}" ]] && continue
-    bashio::log.info "  ${line}"
-done
+printf '%s\n' "${PEER_LIST}" \
+    | awk '/Hostname:/ { h=$2 } /^[[:space:]]*Status:/ { printf "  %-34s %s\n", h, $2 }' \
+    | while IFS= read -r l; do
+        bashio::log.info "${l}"
+    done
 
 # --- supervise -------------------------------------------------------------
 # Home Assistant OS gives no signal when something quietly stops working, so
