@@ -1,6 +1,6 @@
 ---
 name: NordVPN Meshnet
-version: "1.0.2"
+version: "1.0.3"
 slug: nordvpn_meshnet
 description: >-
   Joins this Home Assistant to your NordVPN Meshnet so you can reach it from a
@@ -19,12 +19,21 @@ boot: auto
 # add-on rather than Home Assistant on :8123.
 host_network: true
 
-# Minimal privileges. NET_ADMIN is needed to create the tunnel interface and
-# add routes; /dev/net/tun is the userspace WireGuard device. Notably we do NOT
-# need SYS_MODULE or full_access: nordvpn 5.x ships libtelio.so and loads no
-# kernel module (verified against nordvpn_5.2.0_arm64.deb).
+# NET_ADMIN creates the tunnel interface and adds routes; /dev/net/tun is the
+# userspace WireGuard device.
+#
+# SYS_ADMIN is needed for exactly one thing: enabling Meshnet fails with
+#   setting mesh: setting routing rules: setting rp filter:
+#   sysctl: permission denied on key "net.ipv4.conf.all.rp_filter"
+# because /proc/sys is mounted read-only in add-on containers. SYS_ADMIN lets
+# run.sh remount it read-write so the client can set rp_filter=2, which it
+# requires. See DOCS.md -- this does change a host-wide network setting.
+#
+# We still do NOT need SYS_MODULE or full_access: nordvpn 5.x ships
+# libtelio.so and loads no kernel module (verified against the 5.2.0 deb).
 privileged:
   - NET_ADMIN
+  - SYS_ADMIN
 devices:
   - /dev/net/tun
 

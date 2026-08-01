@@ -11,11 +11,36 @@ Assistant's own traffic continues to leave over the LAN exactly as before. That
 is deliberate: routing HA through a VPN server would break local discovery of
 Govee, LIFX, Matter and similar devices.
 
-It also runs with far fewer privileges than is typical for a VPN add-on:
-`NET_ADMIN` plus `/dev/net/tun`, and nothing else. No `full_access`, no
-`SYS_MODULE`. That is possible because NordVPN 5.x ships `libtelio.so` and
-implements WireGuard in userspace — verified against `nordvpn_5.2.0_arm64.deb`,
-which contains no kernel module and declares no module dependency.
+It runs with far fewer privileges than is typical for a VPN add-on:
+`NET_ADMIN` and `SYS_ADMIN`, plus `/dev/net/tun`. No `full_access`, no
+`SYS_MODULE`. Dropping `SYS_MODULE` is possible because NordVPN 5.x ships
+`libtelio.so` and implements WireGuard in userspace — verified against
+`nordvpn_5.2.0_arm64.deb`, which contains no kernel module and declares no
+module dependency.
+
+### Why SYS_ADMIN is needed
+
+For exactly one thing. Enabling Meshnet fails with:
+
+```
+setting mesh: setting routing rules: setting rp filter:
+sysctl: permission denied on key "net.ipv4.conf.all.rp_filter"
+```
+
+The NordVPN client requires `net.ipv4.conf.all.rp_filter=2`, and `/proc/sys`
+is mounted read-only in add-on containers. `SYS_ADMIN` lets the add-on remount
+it read-write so the client can apply that value.
+
+Because the add-on runs in the host network namespace, **this changes the
+host's reverse-path filtering setting**, not just the container's. The add-on
+records the previous value and restores it when it stops. Going from the usual
+`0` to `2` turns on *loose* reverse-path validation, which is more filtering
+than `0`, not less — but it is a host-wide change and you should know about it.
+
+The trade-off of the remount is that, while running, the add-on can write any
+sysctl. If that is not acceptable, set `net.ipv4.conf.all.rp_filter=2` on the
+host by other means; the add-on detects that it is already `2` and then leaves
+`/proc/sys` untouched.
 
 ## Getting an access token
 

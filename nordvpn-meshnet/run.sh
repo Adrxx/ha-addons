@@ -19,7 +19,9 @@ set -o errexit -o nounset -o pipefail
 
 readonly SOCKET="/run/nordvpn/nordvpnd.sock"
 readonly STATE_DIR="/data/nordvpn"
+readonly RP_FILTER_PATH="/proc/sys/net/ipv4/conf/all/rp_filter"
 declare DAEMON_PID=0
+declare RP_FILTER_ORIGINAL=""
 
 # The nordvpn CLI aborts with "[Fatal] cannot get user home dir" when HOME is
 # unset, which is exactly the case under s6-overlay's service environment.
@@ -101,9 +103,43 @@ save_state() {
     fi
 }
 
+# Enabling Meshnet fails outright unless net.ipv4.conf.all.rp_filter is 2:
+#   setting mesh: setting routing rules: setting rp filter:
+#   sysctl: permission denied on key "net.ipv4.conf.all.rp_filter"
+# /proc/sys is mounted read-only in add-on containers, so remount it. Because
+# this add-on runs in the host network namespace, that sysctl belongs to the
+# host -- so remember the previous value and put it back on the way out.
+prepare_rp_filter() {
+    RP_FILTER_ORIGINAL=$(cat "${RP_FILTER_PATH}" 2>/dev/null || echo "")
+
+    if [[ "${RP_FILTER_ORIGINAL}" == "2" ]]; then
+        bashio::log.info "rp_filter is already 2; leaving /proc/sys alone."
+        RP_FILTER_ORIGINAL=""
+        return 0
+    fi
+
+    if mount -o remount,rw /proc/sys 2>/dev/null; then
+        bashio::log.info \
+            "Remounted /proc/sys read-write so the client can set \
+net.ipv4.conf.all.rp_filter=2 (was ${RP_FILTER_ORIGINAL:-unknown}). This is a \
+host-wide setting and is restored when the add-on stops."
+    else
+        bashio::log.warning \
+            "Could not remount /proc/sys read-write. Meshnet will fail to \
+start unless net.ipv4.conf.all.rp_filter is already 2."
+    fi
+}
+
+restore_rp_filter() {
+    if [[ -n "${RP_FILTER_ORIGINAL}" ]]; then
+        echo "${RP_FILTER_ORIGINAL}" > "${RP_FILTER_PATH}" 2>/dev/null || true
+    fi
+}
+
 cleanup() {
     trap - TERM INT EXIT
     save_state
+    restore_rp_filter
     if [[ "${DAEMON_PID}" -ne 0 ]] && kill -0 "${DAEMON_PID}" 2>/dev/null; then
         bashio::log.info "Stopping nordvpnd (pid ${DAEMON_PID})..."
         kill -TERM "${DAEMON_PID}" 2>/dev/null || true
@@ -266,9 +302,14 @@ nord set autoconnect off || true
 
 # --- meshnet ---------------------------------------------------------------
 
+prepare_rp_filter
+
 bashio::log.info "Enabling Meshnet..."
 if ! nord set meshnet on; then
-    bashio::exit.nok "Could not enable Meshnet."
+    bashio::exit.nok \
+        "Could not enable Meshnet. If the log above mentions rp_filter, the \
+add-on could not make /proc/sys writable -- check that SYS_ADMIN is still \
+listed under 'privileged' in config.yaml."
 fi
 
 if ! bashio::var.is_empty "${NICKNAME}"; then
