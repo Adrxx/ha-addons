@@ -38,9 +38,14 @@ records the previous value and restores it when it stops. Going from the usual
 than `0`, not less — but it is a host-wide change and you should know about it.
 
 The trade-off of the remount is that, while running, the add-on can write any
-sysctl. If that is not acceptable, set `net.ipv4.conf.all.rp_filter=2` on the
-host by other means; the add-on detects that it is already `2` and then leaves
-`/proc/sys` untouched.
+sysctl.
+
+`SYS_ADMIN` alone is not enough: Home Assistant's default AppArmor profile
+denies `mount(2)`, so the add-on also sets `apparmor: false`. There is no way
+around this from inside an add-on — the sysctl cannot be set from any add-on
+container, with or without root, so it cannot be pre-set out of band either.
+The add-on remains bounded by its two capabilities; it does not use
+`full_access`.
 
 ## Getting an access token
 
@@ -121,9 +126,13 @@ limit is reached. Meshnet allows up to 10 devices on one account.
 signed into the same account with Meshnet enabled. Run `nordvpn meshnet peer
 refresh` on the other device.
 
-**Permission errors from the daemon in the log.** Home Assistant applies an
-AppArmor profile to add-ons. If the daemon is denied an operation, set
-`apparmor: false` in `config.yaml` and rebuild, then report what was denied.
+**"Could not remount /proc/sys read-write."** `apparmor: false` is missing from
+`config.yaml`, or the add-on lacks `SYS_ADMIN`. Both are required; see "Why
+SYS_ADMIN is needed" above.
+
+**"moose: sqlite connect error", then login hangs forever.** `/var/lib/nordvpn`
+has been made a symlink. It must be a real directory — the add-on mirrors it to
+`/data` instead. This was the original cause of logins that never completed.
 
 **Home Assistant became unreachable on the LAN.** Stop the add-on. Everything
 it changes is either inside the container or a NordVPN setting; it writes no

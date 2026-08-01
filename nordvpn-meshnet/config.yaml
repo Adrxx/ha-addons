@@ -1,6 +1,6 @@
 ---
 name: NordVPN Meshnet
-version: "1.0.3"
+version: "1.0.4"
 slug: nordvpn_meshnet
 description: >-
   Joins this Home Assistant to your NordVPN Meshnet so you can reach it from a
@@ -36,6 +36,13 @@ privileged:
   - SYS_ADMIN
 devices:
   - /dev/net/tun
+
+# Home Assistant's default AppArmor profile denies mount(2), so even with
+# SYS_ADMIN the remount of /proc/sys is refused and Meshnet cannot set
+# rp_filter. Disabling the profile is the only way to permit that mount from
+# an add-on. Everything else the add-on is allowed to do is still bounded by
+# the two capabilities above -- there is no full_access here.
+apparmor: false
 
 options:
   token: ""
