@@ -190,6 +190,12 @@ install -d -m 0750 /run/nordvpn
 
 # --- start the daemon ------------------------------------------------------
 
+# Must happen BEFORE the daemon starts. Once a session has been established,
+# the restored config already has Meshnet enabled, so nordvpnd tries to bring
+# it up immediately on startup -- and fails on rp_filter if we have not
+# prepared /proc/sys yet.
+prepare_rp_filter
+
 bashio::log.info "Starting nordvpnd..."
 # Process substitution rather than a pipe, so $! is nordvpnd itself.
 /usr/sbin/nordvpnd > >(daemon_log) 2>&1 &
@@ -302,14 +308,29 @@ nord set autoconnect off || true
 
 # --- meshnet ---------------------------------------------------------------
 
-prepare_rp_filter
-
 bashio::log.info "Enabling Meshnet..."
-if ! nord set meshnet on; then
+mesh_out=$(nordvpn set meshnet on 2>&1 || true)
+if [[ "${mesh_out}" == *"already enabled"* ]]; then
+    bashio::log.debug "Meshnet was already enabled in the restored config."
+fi
+
+# Trust the interface, not the CLI: "already enabled" only means the setting is
+# stored, and the daemon may have failed to actually bring the link up.
+if ! ip link show nordlynx >/dev/null 2>&1; then
+    bashio::log.warning \
+        "Meshnet is configured but the nordlynx interface is missing; \
+toggling it to force a fresh setup..."
+    nord set meshnet off || true
+    sleep 2
+    nord set meshnet on || true
+    sleep 3
+fi
+
+if ! ip link show nordlynx >/dev/null 2>&1; then
     bashio::exit.nok \
-        "Could not enable Meshnet. If the log above mentions rp_filter, the \
-add-on could not make /proc/sys writable -- check that SYS_ADMIN is still \
-listed under 'privileged' in config.yaml."
+        "Meshnet did not come up: no nordlynx interface. If the log mentions \
+rp_filter, the add-on could not make /proc/sys writable -- check that \
+SYS_ADMIN is listed under 'privileged' and apparmor is false in config.yaml."
 fi
 
 if ! bashio::var.is_empty "${NICKNAME}"; then
