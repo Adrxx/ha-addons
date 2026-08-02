@@ -155,6 +155,7 @@ nord_idempotent() {
 
 cleanup() {
     trap - TERM INT EXIT
+    nginx -s quit 2>/dev/null || true
     save_state
     restore_rp_filter
     if [[ "${DAEMON_PID}" -ne 0 ]] && kill -0 "${DAEMON_PID}" 2>/dev/null; then
@@ -436,6 +437,115 @@ printf '%s\n' "${PEER_LIST}" \
         bashio::log.info "${l}"
     done
 
+# --- optional TLS proxy ----------------------------------------------------
+# Terminates HTTPS on the Meshnet address only and proxies to Home Assistant on
+# 127.0.0.1:8123. Binding to ${MESH_IP} rather than 0.0.0.0 is the point: the
+# LAN keeps plain http://homeassistant.local:8123 exactly as before, so
+# $HASS_SERVER and every local script keep working untouched.
+declare TLS_CERT_PATH="" TLS_KEY_PATH="" TLS_CERT_MTIME=""
+
+start_tls_proxy() {
+    local port certfile keyfile
+    port=$(opt tls_port 443)
+    certfile=$(opt tls_certfile fullchain.pem)
+    keyfile=$(opt tls_keyfile privkey.pem)
+    TLS_CERT_PATH="/ssl/${certfile}"
+    TLS_KEY_PATH="/ssl/${keyfile}"
+
+    if [[ -z "${MESH_IP}" ]]; then
+        bashio::log.warning \
+            "TLS is enabled but the Meshnet address is unknown; skipping the \
+proxy rather than binding it to every interface."
+        return 1
+    fi
+
+    if [[ ! -r "${TLS_CERT_PATH}" ]] || [[ ! -r "${TLS_KEY_PATH}" ]]; then
+        bashio::log.warning \
+            "TLS is enabled but ${TLS_CERT_PATH} / ${TLS_KEY_PATH} are not \
+readable. Issue a certificate first (e.g. with the Let's Encrypt add-on, which \
+writes into /ssl). Continuing without HTTPS."
+        return 1
+    fi
+
+    # Quoted heredoc: nginx's own $variables must survive the shell untouched.
+    cat > /etc/nginx/nginx.conf <<'NGINX'
+worker_processes 1;
+error_log /dev/stderr warn;
+pid /run/nginx.pid;
+events { worker_connections 512; }
+http {
+    access_log off;
+    server {
+        # `listen ... ssl http2` rather than the newer `http2 on;` directive:
+        # the base image ships nginx 1.22.1, which rejects the latter outright.
+        listen __MESH_IP__:__PORT__ ssl http2;
+
+        ssl_certificate     __CERT__;
+        ssl_certificate_key __KEY__;
+        ssl_protocols       TLSv1.2 TLSv1.3;
+        ssl_session_cache   shared:SSL:2m;
+
+        # Home Assistant streams state over a websocket; without these the
+        # frontend loads and then sits there never updating.
+        location / {
+            proxy_pass http://127.0.0.1:8123;
+            proxy_http_version 1.1;
+            proxy_set_header Upgrade $http_upgrade;
+            proxy_set_header Connection "upgrade";
+            proxy_set_header Host $host;
+            proxy_read_timeout 300s;
+            client_max_body_size 0;
+        }
+    }
+}
+NGINX
+
+    sed -i \
+        -e "s|__MESH_IP__|${MESH_IP}|" \
+        -e "s|__PORT__|${port}|" \
+        -e "s|__CERT__|${TLS_CERT_PATH}|" \
+        -e "s|__KEY__|${TLS_KEY_PATH}|" \
+        /etc/nginx/nginx.conf
+
+    if ! nginx -t 2>/dev/null; then
+        bashio::log.warning "Generated nginx config is invalid; skipping HTTPS:"
+        nginx -t 2>&1 | while IFS= read -r l; do bashio::log.warning "  ${l}"; done
+        return 1
+    fi
+
+    if ! nginx; then
+        bashio::log.warning "nginx failed to start; continuing without HTTPS."
+        return 1
+    fi
+
+    TLS_CERT_MTIME=$(stat -c %Y "${TLS_CERT_PATH}" 2>/dev/null || echo "")
+    bashio::log.info "HTTPS is up on https://${MESH_IP}:${port} (Meshnet only)."
+    if [[ -n "${SELF_HOST}" ]]; then
+        bashio::log.info \
+            "Point the Home Assistant app's External URL at your certificate's \
+hostname on port ${port} -- not at ${SELF_HOST}, which no public CA can certify."
+    fi
+    return 0
+}
+
+# The Let's Encrypt add-on renews in place; nginx keeps serving the old
+# certificate until told otherwise.
+reload_tls_if_renewed() {
+    [[ -z "${TLS_CERT_PATH}" ]] && return 0
+    [[ -r "${TLS_CERT_PATH}" ]] || return 0
+    local now
+    now=$(stat -c %Y "${TLS_CERT_PATH}" 2>/dev/null || echo "")
+    if [[ -n "${now}" ]] && [[ "${now}" != "${TLS_CERT_MTIME}" ]]; then
+        bashio::log.info "Certificate changed on disk; reloading nginx."
+        nginx -s reload 2>/dev/null || true
+        TLS_CERT_MTIME="${now}"
+    fi
+}
+
+if opt_bool tls_enabled; then
+    start_tls_proxy || true
+fi
+
 # --- supervise -------------------------------------------------------------
 # Home Assistant OS gives no signal when something quietly stops working, so
 # check in periodically and say so loudly in the log if Meshnet drops.
@@ -453,6 +563,8 @@ while true; do
     else
         bashio::log.debug "Meshnet healthy."
     fi
+
+    reload_tls_if_renewed
 
     # Mirror state out periodically too, so an ungraceful kill loses at most
     # one interval rather than the whole session.

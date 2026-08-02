@@ -1,6 +1,6 @@
 ---
 name: NordVPN Meshnet
-version: "1.0.7"
+version: "1.1.0"
 slug: nordvpn_meshnet
 description: >-
   Joins this Home Assistant to your NordVPN Meshnet so you can reach it from a
@@ -44,6 +44,11 @@ devices:
 # the two capabilities above -- there is no full_access here.
 apparmor: false
 
+# Certificates live in Home Assistant's /ssl share (where the Let's Encrypt
+# add-on writes them). Read-only: this add-on never issues or renews them.
+map:
+  - ssl:ro
+
 options:
   token: ""
   nickname: homeassistant
@@ -51,6 +56,10 @@ options:
   allow_lan_access: false
   allow_fileshare: false
   nordvpn_firewall: false
+  tls_enabled: false
+  tls_port: 443
+  tls_certfile: fullchain.pem
+  tls_keyfile: privkey.pem
   check_interval: 300
   log_level: info
 
@@ -61,5 +70,9 @@ schema:
   allow_lan_access: bool
   allow_fileshare: bool
   nordvpn_firewall: bool
+  tls_enabled: bool
+  tls_port: int(1,65535)
+  tls_certfile: str
+  tls_keyfile: str
   check_interval: int(60,3600)
   log_level: list(trace|debug|info|notice|warning|error|fatal)

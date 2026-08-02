@@ -30,6 +30,21 @@ configuration:
     description: >-
       Leave off. This add-on runs in the host network namespace, so NordVPN's
       rules would land in the tables Home Assistant OS manages.
+  tls_enabled:
+    name: Serve HTTPS on the Meshnet address
+    description: >-
+      Terminates TLS on this node's Meshnet IP only and proxies to Home
+      Assistant. Your LAN keeps plain http on port 8123, unchanged. Requires a
+      certificate in /ssl.
+  tls_port:
+    name: HTTPS port
+    description: Port to listen on, bound to the Meshnet address only.
+  tls_certfile:
+    name: Certificate file
+    description: Filename inside /ssl, e.g. fullchain.pem.
+  tls_keyfile:
+    name: Private key file
+    description: Filename inside /ssl, e.g. privkey.pem.
   check_interval:
     name: Health check interval (seconds)
     description: How often to verify Meshnet is still up.

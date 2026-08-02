@@ -69,6 +69,10 @@ kept in `/data` so it survives add-on updates and restarts.
 | `allow_lan_access` | `false` | Let peers route traffic through this node **and** reach the rest of your LAN through it. Powerful and worth understanding before enabling — see below. |
 | `allow_fileshare` | `false` | Allow Meshnet peers to send files to Home Assistant. Off by default; an appliance has no reason to accept file transfers. |
 | `nordvpn_firewall` | `false` | Leave off. See "The firewall option" below. |
+| `tls_enabled` | `false` | Serve HTTPS on the Meshnet address. See "HTTPS over Meshnet". |
+| `tls_port` | `443` | Port for the HTTPS listener, bound to the Meshnet address only. |
+| `tls_certfile` | `fullchain.pem` | Certificate filename inside `/ssl`. |
+| `tls_keyfile` | `privkey.pem` | Private key filename inside `/ssl`. |
 | `check_interval` | `300` | Seconds between Meshnet health checks. |
 | `log_level` | `info` | Set to `debug` to also pass through nordvpnd's own (very verbose) logging. |
 
@@ -103,6 +107,36 @@ Meshnet is up. Reach Home Assistant from any peer at:
 
 Both work from any device signed into the same NordVPN account with Meshnet
 enabled.
+
+## HTTPS over Meshnet
+
+Set `tls_enabled` and the add-on terminates TLS **on the Meshnet address only**
+and proxies to Home Assistant on `127.0.0.1:8123`. Port 8123 on your LAN is
+untouched, so `http://homeassistant.local:8123` and anything pointing at it keep
+working exactly as before.
+
+**You cannot get a trusted certificate for a `.nord` name.** `.nord` is not a
+public TLD and the Meshnet IP is CGNAT space, so no CA will issue for either.
+The way to get a real certificate is a domain you own:
+
+1. Issue a certificate for a name you control (e.g. `ha.example.com`) using a
+   **DNS-01** challenge — the Let's Encrypt add-on does this and needs no
+   inbound access. It writes `fullchain.pem` / `privkey.pem` into `/ssl`.
+2. Add a **public A record** for that name pointing at this node's Meshnet IP.
+   Public DNS will happily serve a CGNAT address; it is unroutable from the
+   internet, so only Meshnet peers can reach it.
+3. Enable `tls_enabled` here and point the Home Assistant app's **External URL**
+   at `https://ha.example.com` on the configured port.
+
+Two things to accept: the hostname becomes public via Certificate Transparency
+logs, and the A record publicly reveals a private IP (harmless, but real).
+
+The add-on watches the certificate file and reloads nginx when it changes, so
+renewals are picked up without a restart.
+
+Note that Meshnet is **already encrypted** — it is WireGuard underneath. HTTPS
+here buys browser secure-context features and removes the "Not Secure" warning;
+it is not what protects the traffic.
 
 ## Ordering constraints (why the startup sequence looks the way it does)
 

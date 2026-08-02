@@ -26,6 +26,7 @@ RUN set -eux; \
         libidn2-0 \
         libnl-genl-3-200 \
         libsqlite3-0 \
+        nginx-light \
         procps \
         xsltproc \
         zlib1g; \
