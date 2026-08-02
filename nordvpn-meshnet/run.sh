@@ -443,6 +443,7 @@ printf '%s\n' "${PEER_LIST}" \
 # LAN keeps plain http://homeassistant.local:8123 exactly as before, so
 # $HASS_SERVER and every local script keep working untouched.
 declare TLS_CERT_PATH="" TLS_KEY_PATH="" TLS_CERT_MTIME=""
+declare SS_CERT="" SS_KEY=""
 
 start_tls_proxy() {
     local port certfile keyfile
@@ -467,24 +468,34 @@ writes into /ssl). Continuing without HTTPS."
         return 1
     fi
 
-    # Quoted heredoc: nginx's own $variables must survive the shell untouched.
-    cat > /etc/nginx/nginx.conf <<'NGINX'
-worker_processes 1;
-error_log /dev/stderr warn;
-pid /run/nginx.pid;
-events { worker_connections 512; }
-http {
-    access_log off;
-    server {
-        # `listen ... ssl http2` rather than the newer `http2 on;` directive:
-        # the base image ships nginx 1.22.1, which rejects the latter outright.
-        listen __MESH_IP__:__PORT__ ssl http2;
+    # A second, self-signed certificate for this node's Nord hostname, so
+    # https://<name>.nord also works. No CA can ever sign a .nord name -- it is
+    # not a public TLD -- so browsers will warn unless you install this
+    # certificate on the device. It is kept in /data rather than regenerated on
+    # every start: a changing fingerprint would invalidate that trust each time.
+    local ss_dir="${STATE_DIR}/selfsigned"
+    SS_CERT=""; SS_KEY=""
+    if [[ -n "${SELF_HOST}" ]]; then
+        install -d -m 0700 "${ss_dir}"
+        if [[ ! -s "${ss_dir}/cert.pem" ]] || [[ ! -s "${ss_dir}/key.pem" ]] \
+            || ! openssl x509 -in "${ss_dir}/cert.pem" -noout -checkend 2592000 >/dev/null 2>&1 \
+            || ! openssl x509 -in "${ss_dir}/cert.pem" -noout -text 2>/dev/null | grep -q "${SELF_HOST}"; then
+            bashio::log.info "Generating a self-signed certificate for ${SELF_HOST}..."
+            openssl req -x509 -newkey rsa:2048 -nodes \
+                -keyout "${ss_dir}/key.pem" -out "${ss_dir}/cert.pem" \
+                -days 3650 -subj "/CN=${SELF_HOST}" \
+                -addext "subjectAltName=DNS:${SELF_HOST},IP:${MESH_IP}" >/dev/null 2>&1 || true
+            chmod 600 "${ss_dir}/key.pem" 2>/dev/null || true
+        fi
+        if [[ -s "${ss_dir}/cert.pem" ]]; then
+            SS_CERT="${ss_dir}/cert.pem"
+            SS_KEY="${ss_dir}/key.pem"
+        fi
+    fi
 
-        ssl_certificate     __CERT__;
-        ssl_certificate_key __KEY__;
-        ssl_protocols       TLSv1.2 TLSv1.3;
-        ssl_session_cache   shared:SSL:2m;
-
+    # Shared proxy body. Quoted heredoc: nginx's own $variables must survive
+    # the shell untouched.
+    cat > /etc/nginx/ha_proxy.conf <<'NGINX'
         # Home Assistant streams state over a websocket; without these the
         # frontend loads and then sits there never updating.
         location / {
@@ -496,16 +507,49 @@ http {
             proxy_read_timeout 300s;
             client_max_body_size 0;
         }
-    }
-}
 NGINX
 
-    sed -i \
-        -e "s|__MESH_IP__|${MESH_IP}|" \
-        -e "s|__PORT__|${port}|" \
-        -e "s|__CERT__|${TLS_CERT_PATH}|" \
-        -e "s|__KEY__|${TLS_KEY_PATH}|" \
-        /etc/nginx/nginx.conf
+    {
+        cat <<'NGINX'
+worker_processes 1;
+error_log /dev/stderr warn;
+pid /run/nginx.pid;
+events { worker_connections 512; }
+http {
+    access_log off;
+NGINX
+        # Default server: the publicly trusted certificate. Also what a client
+        # gets when connecting straight to the Meshnet IP, which sends no SNI.
+        # Note "listen ... ssl http2" rather than the newer "http2 on;"
+        # directive -- the base image ships nginx 1.22.1, which rejects that.
+        cat <<NGINX
+    server {
+        listen ${MESH_IP}:${port} ssl http2 default_server;
+        server_name _;
+        ssl_certificate     ${TLS_CERT_PATH};
+        ssl_certificate_key ${TLS_KEY_PATH};
+        ssl_protocols       TLSv1.2 TLSv1.3;
+        ssl_session_cache   shared:SSL:2m;
+        include /etc/nginx/ha_proxy.conf;
+    }
+NGINX
+        # Selected by SNI: the self-signed certificate for the .nord hostname,
+        # so https://<name>.nord works too. Browsers warn on it unless the
+        # certificate is installed on the device -- no CA can sign a .nord name.
+        if [[ -n "${SS_CERT}" ]]; then
+            cat <<NGINX
+    server {
+        listen ${MESH_IP}:${port} ssl http2;
+        server_name ${SELF_HOST};
+        ssl_certificate     ${SS_CERT};
+        ssl_certificate_key ${SS_KEY};
+        ssl_protocols       TLSv1.2 TLSv1.3;
+        include /etc/nginx/ha_proxy.conf;
+    }
+NGINX
+        fi
+        echo "}"
+    } > /etc/nginx/nginx.conf
 
     if ! nginx -t 2>/dev/null; then
         bashio::log.warning "Generated nginx config is invalid; skipping HTTPS:"
